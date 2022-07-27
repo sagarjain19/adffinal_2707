@@ -1,0 +1,9 @@
+{
+	"name": "adfdemo1010",
+	"location": "centralindia",
+	"identity": {
+		"type": "SystemAssigned",
+		"principalId": "b252f7f2-56c2-40fa-8e41-b2f577dee247",
+		"tenantId": "eab91f23-3244-40aa-8e73-a1e0e1e22949"
+	}
+}
