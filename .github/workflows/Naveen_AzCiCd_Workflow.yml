@@ -1,0 +1,158 @@
+name: Naveen_AzCiCd_Workflow
+on: 
+  push:
+    branches:
+      - adf_collaboration
+    paths: 
+      - code/datafactory/dataflow/*
+      - code/datafactory/dataset/*
+      - code/datafactory/factory/*
+      - code/datafactory/integrationRuntime/*
+      - code/datafactory/linkedService/*
+      - code/datafactory/pipeline/*
+      - code/datafactory/trigger/*
+    
+  workflow_dispatch:
+#env:
+  # Variables subject to change depending on target
+  #tenantId: eab91f23-3244-40aa-8e73-a1e0e1e22949
+  #sourceSubscriptionId: 24e4b4be-7875-429e-9548-fdc3241c1683
+  #destinationSubscriptionId: 24e4b4be-7875-429e-9548-fdc3241c1683
+  #sourceResourceGroupName: rgdemo101
+  #sourceFactoryName1: adfdemo1010
+  #destinationResourceGroupName: rgdemo101
+  #destinationFactoryName: adedemo2020
+  #armParameterFile: ARMTemplateParametersForFactory.json
+  #factoryDirectory: code/datafactory
+  #artifactName: adf_armtemplate
+
+jobs:
+  validate_and_generate:
+    runs-on: ubuntu-latest
+    steps:
+      # Checkout current branch
+      - name: Checkout 
+        uses: actions/checkout@v1
+       # Initiate connection to Azure
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }} 
+          enable-AzPSSession: true        
+     # Get Secrets from Key Vault
+      - uses: Azure/get-keyvault-secrets@v1 
+        name: Get Key Vault Secrets
+        with: 
+          keyvault: AzKeyVault1010
+          secrets: 'sourceSubscriptionId ,factoryDirectory ,sourceResourceGroupName ,sourceFactoryName1, artifactName'
+        id: getSecrets1
+      # Install Node.js
+      - name: Setup Node.js
+        uses: actions/setup-node@v1
+        with:
+          node-version: '10.x'
+      # Install npm packages saved in package.json file in the build
+      - name: Install npm package
+        run: npm install
+      # Validate all ADF resources
+      - name: Validate
+        run: npm run build validate $factoryDirectory $npmstring
+        env:
+          npmstring: /subscriptions/"${{ steps.getSecrets1.outputs.sourceSubscriptionId }}"/resourceGroups/"${{ steps.getSecrets1.outputs.sourceResourceGroupName }}"/providers/Microsoft.DataFactory/factories/"${{ steps.getSecrets1.outputs.sourceFactoryName1 }}"
+          factoryDirectory: "${{ steps.getSecrets1.outputs.factoryDirectory }}"
+          
+      # Generate ARM Template
+      - name: Generate ARM Template
+        run: npm run build export $factoryDirectory $npmstring
+        env:
+          npmstring: /subscriptions/"${{ steps.getSecrets1.outputs.sourceSubscriptionId }}"/resourceGroups/"${{ steps.getSecrets1.outputs.sourceResourceGroupName }}"/providers/Microsoft.DataFactory/factories/"${{ steps.getSecrets1.outputs.sourceFactoryName1 }}" $artifactName
+          factoryDirectory: "${{ steps.getSecrets1.outputs.factoryDirectory }}"
+
+      # Copy parameters files for destination data factory
+      #- name: Copy Applicable Parameter File
+      #  run: cp "$factoryDirectory/$armParameterFile" ${{ steps.getSecrets1.outputs.artifactName }}
+      #  env:
+      #    factoryDirectory: "${{ steps.getSecrets1.outputs.factoryDirectory }}"
+      # List artifact files
+      - name: List Artifact Files
+        run: ls ${{ steps.getSecrets1.outputs.artifactName }}
+      # Upload ARM Template to Workflow Artifacts
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v2
+        with:
+          name: ${{ steps.getSecrets1.outputs.artifactName }}
+          path: ${{ steps.getSecrets1.outputs.artifactName }}
+  deploy:
+    needs: validate_and_generate
+    environment: PRD # !! Change depending on target environment
+    runs-on: ubuntu-latest
+    steps:
+      # Initiate connection to Azure
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }} 
+          enable-AzPSSession: true 
+     # Get Secrets from Key Vault
+      - id: getSecrets2
+        name: Get Key Vault Secrets
+        uses: Azure/get-keyvault-secrets@v1
+        with: 
+          keyvault: AzKeyVault1010
+          secrets: 'targetSubscriptionId,targetResourceGroupName,targetFactoryName,artifactName,armParameterFile'
+      # Download ARM Template from Workflow Artifacts
+      - name: Download Artifact
+        uses: actions/download-artifact@v2
+        with:
+          name: ${{ steps.getSecrets1.outputs.artifactName }}
+          path: ${{ steps.getSecrets1.outputs.artifactName }}
+      # Validate ARM Template
+      - name: Validate Deployment
+        uses:  azure/arm-deploy@v1
+        with:
+          subscriptionId: ${{ steps.getSecrets2.outputs.targetSubscriptionId }}
+          resourceGroupName: ${{ steps.getSecrets2.outputs.targetResourceGroupName }}
+          template: ${{ steps.getSecrets2.outputs.artifactName }}/ARMTemplateForFactory.json
+          parameters: ${{ steps.getSecrets2.outputs.artifactName }}/${{ steps.getSecrets2.outputs.armParameterFile }}
+          deploymentMode: Validate
+      # Execute Adf Pre-Deployment Script
+      - name: Pre-Deployment Script
+        uses: azure/powershell@v1
+        with:
+          inlineScript: |
+            Set-Location ${{ steps.getSecrets2.outputs.artifactName }}
+            ./PrePostDeploymentScript.ps1 `
+              -armTemplate ARMTemplateForFactory.json `
+              -ResourceGroupName ${{ steps.getSecrets2.outputs.targetResourceGroupName }} `
+              -DataFactoryName ${{ steps.getSecrets2.outputs.targetFactoryName }} `
+              -predeployment $true `
+              -deleteDeployment $false
+          azPSVersion: latest
+      # Deploy ARM Template
+      - name: Deployment 
+        uses: azure/powershell@v1
+        with:
+          inlineScript: |
+            New-AzResourceGroupDeployment `
+              -ResourceGroupName ${{ steps.getSecrets2.outputs.targetResourceGroupName }} `
+              -TemplateFile ${{ steps.getSecrets2.outputs.artifactName }}/ARMTemplateForFactory.json `
+              -TemplateParameterFile ${{ steps.getSecrets2.outputs.artifactName }}/${{ steps.getSecrets2.outputs.armParameterFile }} `
+              -factoryName adedemo2020 `
+              -Verbose
+          azPSVersion: latest
+      # Execute Adf Post-Deployment Script
+      - name: Post-Deployment Script
+        uses: azure/powershell@v1
+        with:
+          inlineScript: |
+            Set-Location ${{ steps.getSecrets2.outputs.artifactName }}
+            ./PrePostDeploymentScript.ps1 `
+              -armTemplate ARMTemplateForFactory.json `
+              -ResourceGroupName ${{ steps.getSecrets2.outputs.targetResourceGroupName }} `
+              -DataFactoryName ${{ steps.getSecrets2.outputs.targetFactoryName }} `
+              -predeployment $false `
+              -deleteDeployment $false
+          azPSVersion: latest
+      # Checkout current branch
+      - name: Checkout 
+        uses: actions/checkout@v1
